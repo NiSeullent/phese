@@ -1,0 +1,50 @@
+{
+  "text": {
+    "page_title": "입원 처리됨 · AsylumEnforce 폐쇄!",
+    "heading_lines": [
+      "이 요청은",
+      "입원 처리되었습니다."
+    ],
+    "description": "공격 위험성이 있는 동작이 보호 정책에 의해 차단되었습니다. 이 요청의 실행은 여기서 멈춥니다.",
+    "button_text": "그래도 들어갈래?",
+    "footer": "병동 이름은 폐쇄. 보호는 진지하게.",
+    "meme_caption": "공격은 금지. 요청은 입원. 병동은 폐쇄!",
+    "brand": "AsylumEnforce · 폐쇄!",
+    "name": "어떻게 병동이름이 폐쇄야 보호 시스템"
+  },
+  "terms": {
+    "isolation": "입원",
+    "sandbox": "폐쇄적 환경",
+    "deep": "안정실",
+    "risk": "공격 위험성 · 보호 정책 위반"
+  },
+  "colors": {
+    "paper": "#f6fbff",
+    "ink": "#173c5a",
+    "blue": "#205e91",
+    "line": "#c7deee",
+    "wash": "#e5f0f8",
+    "red": "#a92f46",
+    "amber": "#fff1cc"
+  },
+  "media": {
+    "image_url": "https://i.ibb.co/fzBFJRt5/c22a58ab-401e-49c6-a3b8-0e186459b1f9.png",
+    "image_alt": "폐쇄병동 보안 격리 시스템이 허용되지 않은 시도를 차단했다는 안내",
+    "youtube_video_id": "woclOVku5p4",
+    "youtube_title": "돌카스 · 해커에 대한 격노 (해킹송)"
+  },
+  "redirects": [
+    {
+      "url": "https://www.youtube.com/watch?v=UBiXxfeiWq4",
+      "weight": 98
+    },
+    {
+      "url": "https://youtu.be/zmfAMMwMOQc",
+      "weight": 1
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "weight": 1
+    }
+  ]
+}

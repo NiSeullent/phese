@@ -1,0 +1,16 @@
+include LICENSE README.md SECURITY.md CHANGELOG.md pyproject.toml
+recursive-include phese/assets *.html *.json
+recursive-include extension *.c *.h *.m4 *.sh *.md
+recursive-include tools *.py *.sh
+recursive-include policies *
+recursive-include web *.html
+recursive-include themes *.json
+recursive-include docs *.md
+recursive-include tests *.py
+exclude extension/config.h extension/config.h.in
+prune extension/build
+prune extension/autom4te.cache
+prune extension/.libs
+prune extension/modules
+prune .codex
+global-exclude __pycache__ *.pyc *.so *.o *.lo *.la *.dep

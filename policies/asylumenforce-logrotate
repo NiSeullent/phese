@@ -1,0 +1,12 @@
+/var/log/asylumenforce/admissions.jsonl {
+    size 10M
+    rotate 20
+    compress
+    missingok
+    notifempty
+    create 0640 root root
+    sharedscripts
+    postrotate
+        /usr/bin/systemctl kill -s HUP rsyslog.service
+    endscript
+}

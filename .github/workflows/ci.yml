@@ -1,0 +1,109 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Checkout alone receives the built-in read-only token, including in private staging.
+      - name: Check out the event commit
+        shell: bash
+        env:
+          PHESE_CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set +x
+          set -euo pipefail
+          unset GIT_TRACE GIT_TRACE_CURL GIT_CURL_VERBOSE GIT_TRACE_PACKET
+          unset GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF GIT_CONFIG_PARAMETERS
+          test -n "$PHESE_CHECKOUT_TOKEN"
+          trap 'unset PHESE_CHECKOUT_TOKEN phese_checkout_auth' EXIT
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          phese_checkout_auth=$(printf 'x-access-token:%s' "$PHESE_CHECKOUT_TOKEN" | base64 --wrap=0)
+          unset PHESE_CHECKOUT_TOKEN
+          GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 \
+            GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git.extraheader" \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $phese_checkout_auth" \
+            GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= \
+            git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          unset phese_checkout_auth
+          git checkout --detach FETCH_HEAD
+      - name: Python syntax
+        run: python3 -m compileall -q phese tools tests
+      - name: Python standard library tests
+        run: python3 -m unittest discover -s tests -v
+
+  native-supported:
+    name: PHP 8.5.12 ZTS, FPM, Apache and bubblewrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the event commit
+        shell: bash
+        env:
+          PHESE_CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set +x
+          set -euo pipefail
+          unset GIT_TRACE GIT_TRACE_CURL GIT_CURL_VERBOSE GIT_TRACE_PACKET
+          unset GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF GIT_CONFIG_PARAMETERS
+          test -n "$PHESE_CHECKOUT_TOKEN"
+          trap 'unset PHESE_CHECKOUT_TOKEN phese_checkout_auth' EXIT
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          phese_checkout_auth=$(printf 'x-access-token:%s' "$PHESE_CHECKOUT_TOKEN" | base64 --wrap=0)
+          unset PHESE_CHECKOUT_TOKEN
+          GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 \
+            GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git.extraheader" \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $phese_checkout_auth" \
+            GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= \
+            git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          unset phese_checkout_auth
+          git checkout --detach FETCH_HEAD
+      - name: Install build dependencies in the disposable runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            apache2-dev autoconf bison build-essential ca-certificates curl git \
+            libcap-dev meson ninja-build pkg-config python3 re2c xz-utils
+      - name: Allow user namespace tests in this disposable VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
+            phese_ci_original_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)
+            printf '%s\n' "$phese_ci_original_userns" > "$RUNNER_TEMP/phese-original-userns"
+            case "$phese_ci_original_userns" in
+              1) sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ;;
+              0) true ;;
+              *) exit 1 ;;
+            esac
+          fi
+      - name: Build pinned sources and run every supported-profile test
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env PATH="$PATH" GITHUB_ACTIONS=true PHESE_CI_EPHEMERAL_RUNNER=1 \
+            bash tools/ci-supported-profile.sh
+      - name: Restore the runner user namespace setting
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$RUNNER_TEMP/phese-original-userns"; then
+            phese_ci_original_userns=$(cat "$RUNNER_TEMP/phese-original-userns")
+            case "$phese_ci_original_userns" in
+              0|1) sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$phese_ci_original_userns" ;;
+              *) exit 1 ;;
+            esac
+          fi

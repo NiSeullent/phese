@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phese"
+version = "1.0.0"
+description = "AsylumEnforce: PHP high enforcing-security essentials (폐쇄!)"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+
+[project.scripts]
+phese = "phese.cli:main"
+
+[tool.setuptools]
+packages = ["phese", "phese.assets"]
+
+[tool.setuptools.package-data]
+phese = ["guard.php"]
+"phese.assets" = ["*.html", "*.json"]
