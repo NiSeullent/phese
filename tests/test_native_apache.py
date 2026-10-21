@@ -280,7 +280,10 @@ MaxRequestWorkers 8
             log = ((alternate / "error.log").read_text() +
                    (alternate / "stdout.log").read_text() + php_errors.read_text())
             self.assertIn("cannot install mandatory seccomp", log)
-            self.assertIn("worker enforcement previously failed", log)
+            # Apache may replace a worker after request-startup refusal. A new
+            # process reports its first EPERM again, so the sticky-state wording
+            # depends on scheduling. Every concurrent and later wave above must
+            # still refuse application entry, regardless of worker replacement.
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)

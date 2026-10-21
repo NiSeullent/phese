@@ -273,7 +273,10 @@ class SandboxTests(unittest.TestCase):
                                           capture_output=True, text=True, timeout=10,
                                           **cli.sandbox_credentials())
                 self.assertNotEqual(rejected.returncode, 0)
-                self.assertIn("symlink destination", rejected.stderr)
+                # Different kernels/bwrap builds report ELOOP or ENOENT here.
+                # The same command succeeded above; replacing only the target
+                # with a symlink must prevent the application from running.
+                self.assertIn("bwrap:", rejected.stderr)
                 self.assertFalse((outside / "written").exists())
                 storage.unlink()
                 (app / "old-storage").rename(storage)

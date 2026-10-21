@@ -13,8 +13,24 @@ if [[ $(uname -m) != x86_64 || ! -x /usr/bin/apxs || ! -x /usr/sbin/apache2 ]]; 
 fi
 
 phese_ci_repository=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-phese_ci_root=$(mktemp -d /opt/phese-native-ci.XXXXXXXX)
+python3 - <<'PY'
+import os
+import stat
+
+parent = os.lstat("/")
+print(f"CI build parent /: uid={parent.st_uid} mode={stat.S_IMODE(parent.st_mode):04o}", flush=True)
+if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_mode & 0o022:
+    raise SystemExit("CI build parent must be a root-owned directory without group/other write access")
+try:
+    previous_parent = os.lstat("/opt")
+except FileNotFoundError:
+    print("CI /opt diagnostic: absent", flush=True)
+else:
+    print(f"CI /opt diagnostic: uid={previous_parent.st_uid} mode={stat.S_IMODE(previous_parent.st_mode):04o} symlink={stat.S_ISLNK(previous_parent.st_mode)}", flush=True)
+PY
+phese_ci_root=$(mktemp -d /phese-native-ci.XXXXXXXX)
 chmod 0755 "$phese_ci_root"
+stat -c 'CI temporary build root: uid=%u mode=%a' "$phese_ci_root"
 cleanup() {
     phese_ci_exit=$?
     trap - EXIT

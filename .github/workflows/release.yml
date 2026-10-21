@@ -1,0 +1,279 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag (optional when dispatching on that tag)
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.checks.outputs.tag }}
+      commit: ${{ steps.checks.outputs.commit }}
+      run: ${{ steps.checks.outputs.run }}
+    steps:
+      - name: Select the existing release tag
+        id: select
+        shell: bash
+        env:
+          PHESE_INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ.get('PHESE_INPUT_TAG', '')
+          if not tag and os.environ['GITHUB_REF'].startswith('refs/tags/'):
+              tag = os.environ['GITHUB_REF'].removeprefix('refs/tags/')
+          if not re.fullmatch(r'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', tag):
+              raise SystemExit('Select an existing vX.Y.Z tag; branch dispatch needs the tag input')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('tag=' + tag + '\n')
+          PY
+      - name: Check out the exact tag with the read-only token
+        shell: bash
+        env:
+          PHESE_TAG: ${{ steps.select.outputs.tag }}
+          PHESE_CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set +x
+          set -euo pipefail
+          unset GIT_TRACE GIT_TRACE_CURL GIT_CURL_VERBOSE GIT_TRACE_PACKET
+          unset GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF GIT_CONFIG_PARAMETERS
+          test -n "$PHESE_CHECKOUT_TOKEN"
+          trap 'unset PHESE_CHECKOUT_TOKEN phese_checkout_auth' EXIT
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          phese_checkout_auth=$(printf 'x-access-token:%s' "$PHESE_CHECKOUT_TOKEN" | base64 --wrap=0)
+          unset PHESE_CHECKOUT_TOKEN
+          GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 \
+            GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git.extraheader" \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $phese_checkout_auth" \
+            GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= \
+            git fetch --no-tags --depth=1 origin "refs/tags/$PHESE_TAG:refs/tags/$PHESE_TAG"
+          unset phese_checkout_auth
+          git checkout --detach "refs/tags/$PHESE_TAG^{commit}"
+          if [[ $GITHUB_EVENT_NAME == push ]]; then
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "$GITHUB_SHA^{commit}")"
+          fi
+      - name: Require Checks for this commit
+        id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PHESE_TAG: ${{ steps.select.outputs.tag }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, subprocess, time, tomllib
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          REPOSITORY = os.environ['GITHUB_REPOSITORY']
+          HOST = urlsplit(os.environ['GITHUB_SERVER_URL']).netloc
+
+          def api(path):
+              result = subprocess.run(['gh', 'api', '--hostname', HOST, '--paginate', '--slurp', path],
+                                      check=True, text=True, capture_output=True)
+              return json.loads(result.stdout)
+
+          def choose_run(pages, commit, workflow_id):
+              candidates = []
+              for page in pages:
+                  for run in page.get('workflow_runs', []):
+                      if (run.get('head_sha') == commit and run.get('workflow_id') == workflow_id
+                          and run.get('event') == 'push' and run.get('name') == 'Checks'
+                          and run.get('path') == '.github/workflows/ci.yml'
+                          and run.get('head_repository', {}).get('full_name') == REPOSITORY
+                          and run.get('actor', {}).get('login') != 'dependabot[bot]'
+                          and run.get('triggering_actor', {}).get('login') != 'dependabot[bot]'):
+                          candidates.append(run)
+              return max(candidates, key=lambda item: int(item['id'])) if candidates else None
+
+          def require_jobs(pages, commit, run_id):
+              jobs = [job for page in pages for job in page.get('jobs', [])]
+              required = {
+                  'python': 'Python standard library tests',
+                  'PHP 8.5.12 ZTS, FPM, Apache and bubblewrap':
+                      'Build pinned sources and run every supported-profile test',
+              }
+              for name, step in required.items():
+                  matches = [job for job in jobs if job.get('name') == name]
+                  if len(matches) != 1:
+                      raise RuntimeError('Missing or duplicate required Checks job: ' + name)
+                  job = matches[0]
+                  if (job.get('head_sha') != commit or job.get('run_id') != run_id
+                      or job.get('status') != 'completed' or job.get('conclusion') != 'success'):
+                      raise RuntimeError('Required Checks job did not succeed: ' + name)
+                  matches = [item for item in job.get('steps', []) if item.get('name') == step]
+                  if len(matches) != 1 or matches[0].get('conclusion') != 'success':
+                      raise RuntimeError('Required test step did not succeed: ' + step)
+              # The native-supported step runs ci-supported-profile.sh, which
+              # exits nonzero on any skipped test or missing required class.
+
+          def wait_for_checks(commit, timeout=3300, clock=time.monotonic, sleep=time.sleep):
+              workflow = api(f'repos/{REPOSITORY}/actions/workflows/ci.yml')[0]
+              if workflow.get('path') != '.github/workflows/ci.yml' or workflow.get('state') != 'active':
+                  raise RuntimeError('Checks workflow is missing or disabled')
+              deadline = clock() + timeout
+              while clock() < deadline:
+                  pages = api(f'repos/{REPOSITORY}/actions/workflows/ci.yml/runs?head_sha={commit}&event=push&per_page=100')
+                  run = choose_run(pages, commit, workflow['id'])
+                  if run and run.get('status') == 'completed':
+                      if run.get('conclusion') != 'success':
+                          raise RuntimeError('Latest eligible Checks run failed: ' + str(run['id']))
+                      attempt = int(run['run_attempt'])
+                      require_jobs(api(f"repos/{REPOSITORY}/actions/runs/{run['id']}/attempts/{attempt}/jobs?per_page=100"),
+                                   commit, run['id'])
+                      current = api(f"repos/{REPOSITORY}/actions/runs/{run['id']}")[0]
+                      if (current.get('run_attempt') == attempt and current.get('status') == 'completed'
+                          and current.get('conclusion') == 'success' and current.get('head_sha') == commit):
+                          return run['id']
+                  print('Waiting for eligible Checks push run and both required jobs', flush=True)
+                  sleep(15)
+              raise RuntimeError('Timed out waiting for Checks; no release was created')
+
+          tag = os.environ['PHESE_TAG']
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          if tag != 'v' + version:
+              raise SystemExit('Tag must equal v + pyproject.toml project.version')
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if not re.fullmatch('[0-9a-f]{40}', commit):
+              raise SystemExit('Unexpected commit ID')
+          run_id = wait_for_checks(commit)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\ncommit={commit}\nrun={run_id}\n')
+          PY
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # No checkout action or build step receives this job's write token.
+      - name: Publish the verified tag once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PHESE_TAG: ${{ needs.verify.outputs.tag }}
+          PHESE_COMMIT: ${{ needs.verify.outputs.commit }}
+          PHESE_CI_RUN: ${{ needs.verify.outputs.run }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          unset GIT_TRACE GIT_TRACE_CURL GIT_CURL_VERBOSE GIT_TRACE_PACKET
+          unset GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF GIT_CONFIG_PARAMETERS
+          python3 - <<'PY'
+          import base64, hashlib, json, os, re, subprocess, tomllib
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          tag, commit = os.environ['PHESE_TAG'], os.environ['PHESE_COMMIT']
+          run_id, repository = os.environ['PHESE_CI_RUN'], os.environ['GITHUB_REPOSITORY']
+          server = os.environ['GITHUB_SERVER_URL']
+          host = urlsplit(server).netloc
+          if (not re.fullmatch(r'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', tag)
+              or not re.fullmatch('[0-9a-f]{40}', commit) or not run_id.isdigit()):
+              raise SystemExit('Invalid verified release metadata')
+
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', '--hostname', host, path], text=True))
+
+          def require_absent_release():
+              result = subprocess.run(['gh', 'api', '--hostname', host, '--include',
+                                       f'repos/{repository}/releases/tags/{tag}'], text=True, capture_output=True)
+              if result.returncode == 0:
+                  raise RuntimeError('Release already exists; existing releases and assets are never overwritten')
+              if not re.search(r'^HTTP/\S+\s+404(?:\s|$)', result.stdout, re.MULTILINE):
+                  raise RuntimeError('Cannot establish release absence; refusing publication')
+
+          def require_remote_tag():
+              obj = api(f'repos/{repository}/git/ref/tags/{tag}')['object']
+              for _ in range(8):
+                  if obj['type'] == 'commit':
+                      if obj['sha'] != commit:
+                          raise RuntimeError('Release tag moved after verification')
+                      return
+                  if obj['type'] != 'tag' or not re.fullmatch('[0-9a-f]{40}', obj['sha']):
+                      break
+                  obj = api(f"repos/{repository}/git/tags/{obj['sha']}")['object']
+              raise RuntimeError('Cannot resolve the release tag to the verified commit')
+
+          require_absent_release()
+          require_remote_tag()
+          # Child commands use a clean read/build environment. The write token
+          # remains solely in this publication process, never in Git config.
+          clean = {key: value for key, value in os.environ.items()
+                   if key not in {'GH_TOKEN', 'GITHUB_TOKEN', 'PHESE_CHECKOUT_TOKEN'}
+                   and not key.startswith(('GIT_CONFIG_', 'GIT_TRACE'))}
+          subprocess.run(['git', 'init', '.'], check=True, env=clean)
+          url = f'{server}/{repository}.git'
+          subprocess.run(['git', 'remote', 'add', 'origin', url], check=True, env=clean)
+          fetch_env = dict(clean, GIT_TERMINAL_PROMPT='0', GIT_CONFIG_COUNT='2',
+                           GIT_CONFIG_KEY_0=f'http.{url}.extraheader',
+                           GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(
+                               ('x-access-token:' + os.environ['GH_TOKEN']).encode()).decode(),
+                           GIT_CONFIG_KEY_1='credential.helper', GIT_CONFIG_VALUE_1='')
+          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin',
+                          f'refs/tags/{tag}:refs/tags/{tag}'], check=True, env=fetch_env)
+          del fetch_env
+          subprocess.run(['git', 'checkout', '--detach', f'refs/tags/{tag}^{{commit}}'], check=True, env=clean)
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, env=clean).strip()
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          if actual != commit or tag != 'v' + version:
+              raise RuntimeError('Checked-out release differs from verified metadata')
+          subprocess.run(['python3', '-m', 'venv', '.release-venv'], check=True, env=clean)
+          python = str(Path('.release-venv/bin/python').absolute())
+          subprocess.run([python, '-m', 'pip', 'install', '--disable-pip-version-check',
+                          'build==1.6.1', 'setuptools==84.2.1', 'wheel==0.48.0'], check=True, env=clean)
+          artifacts = Path('.release-dist')
+          artifacts.mkdir()
+          subprocess.run([python, '-m', 'build', '--no-isolation', '--outdir', str(artifacts)], check=True, env=clean)
+          expected = {f'phese-{version}.tar.gz', f'phese-{version}-py3-none-any.whl'}
+          if {path.name for path in artifacts.iterdir()} != expected:
+              raise RuntimeError('Unexpected release artifact set')
+          lines = []
+          for path in sorted(artifacts.iterdir()):
+              if path.is_symlink() or not path.is_file():
+                  raise RuntimeError('Release artifact must be a regular file')
+              lines.append(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n')
+          (artifacts / 'SHA256SUMS').write_text(''.join(lines))
+          subprocess.run(['sha256sum', '--check', '--strict', 'SHA256SUMS'], cwd=artifacts, check=True, env=clean)
+          notes = Path(os.environ['RUNNER_TEMP']) / 'phese-release-notes.md'
+          notes.write_text(f'AsylumEnforce / phese {tag} (폐쇄!)\n\n커밋: `{commit}`\n\n'
+                           f'[필수 CI 결과]({server}/{repository}/actions/runs/{run_id})\n\n'
+                           'Python 및 PHP 8.5.12 ZTS·FPM·Apache·bubblewrap 지원 프로필 시험을 통과했습니다. '
+                           '지원 프로필은 건너뛴 시험이 한 건이라도 있으면 게시를 거부합니다.\n\n'
+                           '지원 대상: Linux x86_64·glibc·PHP 8.5.12 ZTS. '
+                           '첨부: Python wheel, 네이티브 빌드 SDK를 포함한 소스 배포본, SHA256SUMS. '
+                           'wheel에는 PHP 네이티브 모듈 바이너리가 없으며 서버 ABI에 맞춰 빌드합니다.\n\n'
+                           f'[설치]({server}/{repository}/blob/{commit}/docs/setup.md) · '
+                           f'[자동 설정]({server}/{repository}/blob/{commit}/docs/auto-setup.md) · '
+                           f'[차단 페이지 설정]({server}/{repository}/blob/{commit}/docs/customization.md) · '
+                           f'[검증과 보호 범위]({server}/{repository}/blob/{commit}/docs/validation.md)\n\n'
+                           'PHP 엔진 보안 패치는 필수이며 모든 CVE와 모든 앱의 호환성을 보장하지 않습니다.\n')
+          require_remote_tag()
+          require_absent_release()
+          subprocess.run(['gh', 'release', 'create', tag, '--repo', f'{server}/{repository}',
+                          '--verify-tag', '--title', f'AsylumEnforce / phese {tag}',
+                          '--notes-file', str(notes), *[str(path) for path in sorted(artifacts.iterdir())]], check=True)
+          PY

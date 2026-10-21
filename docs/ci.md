@@ -4,6 +4,8 @@
 
 내장 `github.token`은 각 checkout 단계의 환경에만 전달한다. Basic 인증 헤더를 메모리에서 만든 뒤 `GIT_CONFIG_COUNT` 환경으로 해당 저장소 URL의 단일 `git fetch` 명령에만 적용한다. credential helper를 해당 명령에서 끄고, 원격 URL·Git 설정 파일·credential 파일에 인증 값을 저장하거나 로그로 출력하지 않는다. fetch 뒤에는 헤더 변수도 제거한다. 이후 시험·root 빌드 단계에는 토큰이나 인증 환경을 전달하지 않는다. [Git 명령별 환경 설정](https://git-scm.com/docs/git-config#Documentation/git-config.txt-GITCONFIGCOUNT), [GitHub 내장 토큰과 최소 권한](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token)
 
+브랜치 push와 pull request에서 검사한다. 태그 push는 같은 커밋의 브랜치 검사 결과를 Release 작업에서 확인하므로 네이티브 빌드를 중복 시작하지 않는다.
+
 ## 두 검사 작업
 
 | 작업 | 환경과 검증 |
@@ -20,7 +22,7 @@
 - bubblewrap의 Meson 옵션은 해당 버전의 `meson_options.txt`를 기준으로 한다. `man`, SELinux, completion, upstream 자체 시험을 끄고 user namespace를 요구한다. phese의 실제 syscall·sandbox 시험은 별도로 실행한다. [고정 커밋의 빌드 옵션](https://github.com/containers/bubblewrap/blob/dc63ec667e6546f34e0b6c088cdf8ae7c7dea0f3/meson_options.txt)
 - PHP는 `--disable-all --enable-zts --enable-fpm --with-apxs2=/usr/bin/apxs --enable-session --enable-pcntl --enable-posix`를 중심으로 빌드한다. 이 프로필은 운영 서버의 모든 PHP 확장 구성을 재현하지 않는다.
 
-스크립트는 `/opt/phese-native-ci.XXXXXXXX` 아래에만 빌드·시험 복사본을 만든다. runner의 체크아웃은 일반 사용자 소유이므로 root 소유 경로가 필요한 관리 도구 시험을 위해 커밋의 파일을 별도로 추출한다. 그 checkout의 `git archive` 한 명령에만 정확한 `safe.directory`를 전달하고 전역 Git 설정은 바꾸지 않는다. PHP의 `install-cli`, `install-fpm`, `install-build`, `install-headers`, `install-programs`만 전용 prefix에 실행한다. Apache DSO는 빌드 결과를 전용 디렉터리에 복사하며 `install-sapi`를 실행하지 않는다. 따라서 PHP 빌드가 시스템 Apache 설정에 모듈을 설치하거나 활성화하지 않는다.
+스크립트는 `/phese-native-ci.XXXXXXXX` 아래에만 빌드·시험 복사본을 만든다. 생성 전에 부모 `/`의 root 소유권과 group/other 쓰기 금지를 검사하고 UID·모드를 기록한다. 생성한 임시 디렉터리는 root 소유 `0755`이며, `/opt`의 UID·모드·심볼릭 링크 여부는 경로 문제 진단용으로만 기록한다. `/opt`나 다른 기존 부모의 권한을 변경하지 않는다. runner의 체크아웃은 일반 사용자 소유이므로 root 소유 경로가 필요한 관리 도구 시험을 위해 커밋의 파일을 별도로 추출한다. 그 checkout의 `git archive` 한 명령에만 정확한 `safe.directory`를 전달하고 전역 Git 설정은 바꾸지 않는다. PHP의 `install-cli`, `install-fpm`, `install-build`, `install-headers`, `install-programs`만 전용 prefix에 실행한다. Apache DSO는 빌드 결과를 전용 디렉터리에 복사하며 `install-sapi`를 실행하지 않는다. 따라서 PHP 빌드가 시스템 Apache 설정에 모듈을 설치하거나 활성화하지 않는다.
 
 성공·실패 후 전용 임시 디렉터리를 정리한다. 빌드 실패 시 각 빌드 로그의 끝부분을 CI 로그에 남긴다. 설치된 애플리케이션이나 운영 서비스 설정은 이 스크립트의 대상이 아니다.
 
@@ -36,4 +38,4 @@ Ubuntu 24.04의 AppArmor user namespace 제한이 있으면 워크플로는 **�
 
 구현 시 PHP tarball 해시는 서버의 실제 파일과 공식 메타데이터에서 대조했다. 최소 PHP configure 옵션과 선택 설치 target은 별도 임시 소스 트리에서 확인했다. bubblewrap 옵션과 tag-to-commit 관계는 공식 소스·API에서 확인했다. 워크플로 YAML 파싱과 셸 구문 검사도 로컬 검증 대상이다.
 
-**이 문서를 작성한 시점에는 GitHub의 Ubuntu 네이티브 작업을 실제 실행하지 않았다.** 로컬 AlmaLinux 10.2에서 실행한 지원 프로필 검증과 GitHub runner의 성공을 같은 것으로 보고하지 않는다. 먼저 비공개 staging의 배포 후보 커밋에서 두 작업의 성공과 건너뛴 필수 시험이 없음을 확인한 뒤 공개 전환과 정식 배포를 판단한다. 이후 변경한 커밋도 해당 커밋의 CI 결과를 다시 확인해야 한다. PHP 8.2·8.3·8.4, AArch64, NTS, 다른 libc·확장 조합의 네이티브 CI는 이 워크플로가 제공하지 않는다.
+2026-10-21의 [첫 GitHub 실행](https://github.com/NiSeullent/phese/actions/runs/39647751373)은 PHP·확장·bubblewrap 빌드와 실제 네이티브 시험 35개를 통과했으나, 전체 168개 시험에서는 실패 3개·오류 11개로 종료됐다. 따라서 이 결과는 지원 프로필의 CI 성공 증거가 아니다. 해당 실행에서 드러난 신뢰 경로와 플랫폼별 오류 문구 문제는 이후 커밋에서 수정했다. 정식 릴리스 설명의 CI 링크에서 최종 커밋의 결과를 확인한다. 로컬 AlmaLinux 10.2 검증과 GitHub runner의 성공도 구분한다. 비공개 staging의 최종 배포 후보 커밋에서 두 작업의 성공과 건너뛴 필수 시험이 없음을 확인한 뒤 공개 전환과 정식 배포를 판단한다. 이후 변경한 커밋도 해당 커밋의 CI 결과를 다시 확인해야 한다. PHP 8.2·8.3·8.4, AArch64, NTS, 다른 libc·확장 조합의 네이티브 CI는 이 워크플로가 제공하지 않는다.

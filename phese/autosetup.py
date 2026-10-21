@@ -181,33 +181,54 @@ def public_summary(plan):
             "policy": PROFILE, "optimization": "measurement-required-no-worker-or-cache-changes"}
 
 
-def cli_capability(name, runner=bounded_run, which=shutil.which):
-    selected = which(name)
-    if not selected:
-        return {"available": False, "reason": "not-installed"}
-    path = trusted_file(selected, executable=True)
-    version = runner([str(path), "--version"], timeout=10).strip()
+def cli_capability(name, runner=bounded_run, which=shutil.which, executable=None):
+    """Optional inventory fails per client, without returning paths/raw errors."""
+    def unavailable(reason):
+        return {"available": False, "reason": reason}
+    if name not in {"codex", "claude"}:
+        return unavailable("unsupported-client")
+    try:
+        selected = executable if executable is not None else which(name)
+        if not selected:
+            return unavailable("invalid-cli-path" if executable is not None else "not-installed")
+        if not Path(selected).is_absolute():
+            return unavailable("invalid-cli-path")
+        try:
+            path = trusted_file(selected, executable=True)
+        except FileNotFoundError:
+            return unavailable("not-installed")
+        except SetupError:
+            return unavailable("untrusted-cli-path")
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return unavailable("metadata-unavailable")
     patterns = {"codex": r"codex-cli [0-9]+\.[0-9]+\.[0-9]+", "claude": r"[0-9]+\.[0-9]+\.[0-9]+ \(Claude Code\)"}
-    if not re.fullmatch(patterns[name], version):
-        raise SetupError("unrecognized assistant CLI version response")
-    help_text = runner([str(path), *( ["exec"] if name == "codex" else []), "--help"], timeout=10)
-    flags = CLAUDE_FLAGS if name == "claude" else ("--sandbox", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-                                                  "--output-schema", "--skip-git-repo-check", "--json")
-    if not all(flag in help_text for flag in flags):
-        raise SetupError("installed assistant CLI lacks required planning switches")
-    if name == "codex":
-        features = runner([str(path), "features", "list"], timeout=10)
-        names = {line.split()[0] for line in features.splitlines() if line.split()}
-        if not set(CODEX_DISABLED).issubset(names):
-            raise SetupError("Codex feature controls differ; update the reviewed adapter first")
+    try:
+        version = runner([str(path), "--version"], timeout=10).strip()
+        if not re.fullmatch(patterns[name], version):
+            return unavailable("unsupported-version")
+        help_text = runner([str(path), *( ["exec"] if name == "codex" else []), "--help"], timeout=10)
+        flags = CLAUDE_FLAGS if name == "claude" else ("--sandbox", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+                                                      "--output-schema", "--skip-git-repo-check", "--json")
+        if not all(flag in help_text for flag in flags):
+            return unavailable("unsupported-flags")
+        if name == "codex":
+            features = runner([str(path), "features", "list"], timeout=10)
+            names = {line.split()[0] for line in features.splitlines() if line.split()}
+            if not set(CODEX_DISABLED).issubset(names):
+                return unavailable("unsupported-features")
+        executable_sha256 = digest(path)
+    except (SetupError, subprocess.SubprocessError):
+        return unavailable("probe-failed")
+    except (OSError, ValueError, TypeError):
+        return unavailable("metadata-unavailable")
     return {"available": True, "version": version, "path": str(path),
-            "executable_sha256": digest(path), "model_call_tested": False}
+            "executable_sha256": executable_sha256, "model_call_tested": False}
 
 
-def assistant_advice(name, plan, runner=bounded_run, capability=None):
-    info = capability or cli_capability(name, runner=runner)
+def assistant_advice(name, plan, runner=bounded_run, capability=None, executable=None):
+    info = capability if capability is not None else cli_capability(name, runner=runner, executable=executable)
     if not info["available"]:
-        raise SetupError("selected assistant CLI is not installed; use deterministic setup without it")
+        raise SetupError("selected assistant CLI is unavailable; inspect --assistant-inventory or use deterministic setup without it")
     payload = "PUBLIC_SUMMARY\n" + json.dumps(public_summary(plan), separators=(",", ":")) + "\n"
     with tempfile.TemporaryDirectory(prefix="phese-advice-") as temporary:
         workspace = Path(temporary)
@@ -384,6 +405,8 @@ def main(argv=None):
     parser.add_argument("--assistant", choices=("none", "codex", "claude"), default="none",
                         help="explicit optional account-backed planning call; may consume existing account quota")
     parser.add_argument("--assistant-inventory", action="store_true", help="local --version/--help checks only; no model call")
+    parser.add_argument("--codex-cli", help="explicit absolute trusted Codex executable; default is PATH discovery")
+    parser.add_argument("--claude-cli", help="explicit absolute trusted Claude executable; default is PATH discovery")
     parser.add_argument("--assistant-response-stdin", action="store_true", help="validate strict advice JSON without calling a model")
     parser.add_argument("--report", help="optional private local report; excludes raw CLI errors and health argv")
     parser.add_argument("--apply", action="store_true", help="apply existing policy with health check; may restart selected services")
@@ -404,12 +427,13 @@ def main(argv=None):
             health[name] = strict_json(raw)
         selected = discover_services() if args.discover_services else args.service
         plan = make_plan(args.php, selected, args.extension, args.app)
+        clients = {"codex": args.codex_cli, "claude": args.claude_cli}
         if args.assistant_inventory:
-            plan["assistant_inventory"] = {name: cli_capability(name) for name in ("codex", "claude")}
+            plan["assistant_inventory"] = {name: cli_capability(name, executable=clients[name]) for name in ("codex", "claude")}
         if args.assistant_response_stdin:
             plan["assistant"] = {"provider": "response-import", "advice": validate_advice(strict_json(sys.stdin.read(32769)))}
         elif args.assistant != "none":
-            plan["assistant"] = assistant_advice(args.assistant, plan)
+            plan["assistant"] = assistant_advice(args.assistant, plan, executable=clients[args.assistant])
         if args.apply:
             plan["transactions"] = execute_plan(plan, health)
             plan["service_protection_applied"] = True

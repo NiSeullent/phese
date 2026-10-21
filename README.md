@@ -2,11 +2,11 @@
 
 **PHP high enforcing-security essentials**. 한국어 솔루션 별칭은 **“어떻게 병동이름이 폐쇄야” 보호 시스템**입니다.
 
-PHP 엔진 보안 업데이트를 필수 조건으로 삼고, Linux 커널의 seccomp와 파일·네트워크 격리를 결합하는 방어 코드입니다. Suhosin의 보호 목적을 이어가는 새 프로젝트이며 Suhosin의 모든 기능을 구현한 확장이나 모든 CVE를 차단하는 제품은 아닙니다. **1.0.0 배포 후보**의 정식 지원 대상은 [검증 문서](docs/validation.md)의 플랫폼과 프로필로 한정합니다.
+PHP 엔진 보안 업데이트를 필수 조건으로 삼고, Linux 커널의 seccomp와 파일·네트워크 격리를 결합하는 방어 코드입니다. Suhosin의 보호 목적을 이어가는 새 프로젝트이며 Suhosin의 모든 기능을 구현한 확장이나 모든 CVE를 차단하는 제품은 아닙니다. **1.0.0**의 정식 지원 대상은 [검증 문서](docs/validation.md)의 플랫폼과 프로필로 한정합니다.
 
 ## 기본 동작
 
-- PHP **8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 이상**의 해당 안정 브랜치를 확인합니다. 미패치·미지원·미확인 버전은 실행을 거부합니다.
+- PHP **8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 이상**의 해당 안정 브랜치를 확인합니다. 미패치 버전·미지원 브랜치·시험판은 실행을 거부합니다. 버전 허용 규칙과 정식 검증 범위는 구분합니다.
 - 네이티브 `phese` 확장이 프로세스 실행, ptrace, namespace 변경, 주요 커널 관리 호출을 seccomp로 차단합니다. `disable_functions`에만 의존하지 않습니다.
 - `phese run`은 bubblewrap 격리 안에서 앱을 읽기 전용으로 실행합니다. 임시 디렉터리는 별도이며 네트워크는 기본 차단합니다. 필요한 앱 내부 쓰기 디렉터리만 명시합니다.
 - `phese scan`은 PHP 소스에서 검토할 위치를 찾아 **로컬 수정 요청 JSON**을 만듭니다. 소스는 바꾸지 않고 외부 메시지·GitHub issue를 자동 전송하지 않습니다.
@@ -14,7 +14,7 @@ PHP 엔진 보안 업데이트를 필수 조건으로 삼고, Linux 커널의 se
 
 ## 설치와 실행
 
-정식 지원 프로필은 Linux x86_64·glibc·PHP 8.5.12 ZTS입니다. Python 3.10+, bubblewrap 0.10+, gcc 및 실행할 PHP와 맞는 `phpize`/`php-config`가 필요합니다. 실제 검증한 플랫폼과 범위는 [검증 문서](docs/validation.md)를 확인하세요.
+정식 지원 프로필은 Linux x86_64·glibc·PHP 8.5.12 ZTS입니다. Python 3.10+, bubblewrap 0.10+, gcc 및 실행할 PHP와 맞는 `phpize`/`php-config`가 필요합니다. 실제 검증한 플랫폼과 범위는 [검증 문서](docs/validation.md)를 확인하세요. 배포 파일과 체크섬은 [GitHub Releases](https://github.com/NiSeullent/phese/releases)에서 제공하며 [배포 자동화](docs/releases.md)는 필수 CI 성공 후 게시합니다.
 
 ```bash
 git clone https://github.com/NiSeullent/phese.git
@@ -45,6 +45,17 @@ phese scan /path/to/app --output /private/reports/change-requests.json
 
 `--timeout`은 실행 시간을 제한합니다. fork 수·메모리 총량·디스크 사용량의 완전한 상한이 필요한 작업은 systemd/cgroup 제한도 적용하세요. `RLIMIT_AS`/`RLIMIT_DATA`는 두 CVE의 완화책으로 사용하지 않습니다.
 
+## 자동 설정과 AI 계획
+
+```bash
+sudo python3 tools/install_autosetup.py --install --php /path/to/patched/php
+phese-setup --php /path/to/patched/php --discover-services --assistant-inventory
+# 기존 계정의 Codex 또는 Claude Code로 허용된 설정 계획 요청
+phese-setup --php /path/to/patched/php --service your-php.service --assistant codex
+```
+
+기본값은 모델 호출 없는 진단입니다. 서비스 적용은 명시한 대상과 정상 상태 확인 명령을 사용합니다. AI는 공개 개수·boolean 요약만 받고 기존 정책 안에서 권고하며 임의 명령을 만들거나 실행하지 않습니다. [자동 설정 안내](docs/auto-setup.md)에 설치·계정·도구 범위와 오류 처리, [앱 설정 안내](docs/setup.md)에 프로젝트 지침 연동을 설명합니다.
+
 ## PHP 서버에 적용
 
 [네이티브 확장 안내](extension/README.md)와 [서버 적용·원복 절차](docs/server-rollout.md)를 먼저 읽고 격리된 PHP-FPM 및 Apache에서 검증합니다. 웹 서비스의 네이티브 확장은 [웹 설치 도구](docs/web-install.md)로 서비스별로 로드하고 `phese.scope=worker`를 사용합니다. FPM의 USR2와 Apache의 graceful reload를 유지하며, 요청 worker에서 필터를 설치합니다. 입력 처리 전 보호는 필수 PHP 엔진 패치가 담당합니다. 외부 프로그램을 실행하는 PHP 기능은 차단되므로 해당 기능은 수정 요청으로 검토해야 합니다. CLI 설치만으로 기존 서비스가 보호되지는 않습니다.
@@ -71,5 +82,7 @@ python3 -m compileall -q phese tools tests
 차단 화면은 JSON 하나로 바꿀 수 있습니다: `phese page init /secure/path/theme.json`, `phese page build --config /secure/path/theme.json --output /secure/path/page`. [사용자 설정](docs/customization.md)에서 문구·미디어·이동 확률과 CSP 생성을 설명합니다.
 
 차단 화면은 [입원 안내](docs/block-page.md), 실제 원인과 입원 과정의 누적 기록은 [로그 안내](docs/logging.md)를 확인하세요. 호스트의 추가 보안 업데이트는 [읽기 전용 감사](docs/host-audit.md)로 확인할 수 있습니다.
+
+[기여 안내](CONTRIBUTING.md)와 [변경 기록](CHANGELOG.md)을 함께 제공합니다.
 
 MIT 라이선스. 공개 저장소에는 방어 코드와 일반적인 검증만 포함하고 서버 인벤토리·인증값·고객 코드·비공개 수정 요청은 포함하지 않습니다.
